@@ -1,0 +1,35 @@
+# PR teardown — delete ephemeral preview when PR closes/merges.
+pipeline:
+  name: PR Teardown sample-rust
+  identifier: PR_Teardown_sample_rust
+  projectIdentifier: sample_apps
+  orgIdentifier: default
+  tags:
+    app: sample-rust
+    deploy: pr-teardown
+  stages:
+    - stage:
+        name: Teardown
+        identifier: Teardown
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Delete preview namespace
+                  identifier: Delete_preview_ns
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
+                          NS="samples-pr-sample-rust-<+trigger.prNumber>"
+                          echo "Deleting namespace ${NS} (if present)"
+                          kubectl delete namespace "${NS}" --ignore-not-found
+                    onDelegate: true
+                    delegateSelectors:
+                      - local-kind

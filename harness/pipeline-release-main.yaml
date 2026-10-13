@@ -1,0 +1,77 @@
+# Release on push to main — creates v* tag only (no stable deploy).
+# Register trigger: GitHub push to branch main.
+# Pair with pipeline-deploy-tag.yaml (trigger: tag v*).
+pipeline:
+  name: Release sample-rust Main
+  identifier: Release_sample_rust_Main
+  projectIdentifier: sample_apps
+  orgIdentifier: default
+  tags:
+    app: sample-rust
+    release: semver-main
+  properties:
+    ci:
+      codebase:
+        connectorRef: github_sample_apps
+        repoName: Ironmanburns/sample-rust
+        build: <+input>
+        depth: 0
+  stages:
+    - stage:
+        name: Release
+        identifier: Release
+        description: Conventional commits → annotated v* tag (+ optional GH Release)
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: local_kind_k8s
+              namespace: harness-ci
+              automountServiceAccountToken: true
+              nodeSelector: {}
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Guard main branch
+                  identifier: Guard_main_branch
+                  spec:
+                    connectorRef: dockerhub_public
+                    image: alpine:3.20
+                    shell: Sh
+                    command: |-
+                      set -e
+                      BRANCH="<+codebase.branch>"
+                      echo "codebase.branch=${BRANCH}"
+                      if [ "$BRANCH" != "main" ]; then
+                        echo "Release pipeline only runs for main (got ${BRANCH})"
+                        exit 1
+                      fi
+              - step:
+                  type: Run
+                  name: Semver tag release
+                  identifier: Semver_tag_release
+                  spec:
+                    connectorRef: dockerhub_public
+                    image: alpine:3.20
+                    shell: Sh
+                    # Store a PAT or GitHub App installation token as Harness secret github_release_token
+                    envVariables:
+                      GITHUB_TOKEN: <+secrets.getValue("github_release_token")>
+                      GITHUB_REPOSITORY: Ironmanburns/sample-rust
+                      RELEASE_BRANCH: main
+                      CREATE_GITHUB_RELEASE: "true"
+                    command: |-
+                      set -e
+                      apk add --no-cache git bash python3 nodejs >/dev/null
+                      chmod +x scripts/harness-semver-release.sh
+                      bash scripts/harness-semver-release.sh
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: Abort

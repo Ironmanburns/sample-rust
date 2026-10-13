@@ -1,0 +1,150 @@
+# Stable deploy — TAG ONLY (v*).
+# Register a Harness trigger: GitHub tag push matching v*.
+# Do NOT add a push-to-main trigger for this pipeline.
+pipeline:
+  name: Deploy sample-rust Tag
+  identifier: Deploy_sample_rust_Tag
+  projectIdentifier: sample_apps
+  orgIdentifier: default
+  tags:
+    app: sample-rust
+    deploy: tag-only
+  properties:
+    ci:
+      codebase:
+        connectorRef: github_sample_apps
+        repoName: Ironmanburns/sample-rust
+        build: <+input>
+  variables:
+    - name: imageRepo
+      type: String
+      description: Image repository path on Zot (no registry host)
+      value: sample-rust
+    - name: imageTag
+      type: String
+      description: Semver tag from git (e.g. v1.2.3)
+      value: <+trigger.tag>
+  stages:
+    - stage:
+        name: Build
+        identifier: Build
+        description: Build image from tag, push to Zot, Trivy CRITICAL gate
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: local_kind_k8s
+              namespace: harness-ci
+              automountServiceAccountToken: true
+              nodeSelector: {}
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Guard tag trigger
+                  identifier: Guard_tag_trigger
+                  spec:
+                    connectorRef: dockerhub_public
+                    image: alpine:3.20
+                    shell: Sh
+                    command: |-
+                      set -e
+                      TAG="<+trigger.tag>"
+                      echo "Trigger tag=${TAG}"
+                      case "$TAG" in
+                        v[0-9]*) ;;
+                        *)
+                          echo "Refusing stable deploy without v* tag (tag-only policy)"
+                          exit 1
+                          ;;
+                      esac
+              - step:
+                  type: Run
+                  name: Build and Push
+                  identifier: Build_and_Push
+                  spec:
+                    connectorRef: dockerhub_public
+                    image: gcr.io/kaniko-project/executor:v1.23.2-debug
+                    shell: Sh
+                    command: |-
+                      set -e
+                      REGISTRY="zot.harness-ci.svc.cluster.local:5000"
+                      REPO="<+pipeline.variables.imageRepo>"
+                      TAG="<+pipeline.variables.imageTag>"
+                      SHA="<+codebase.commitSha>"
+                      /kaniko/executor \
+                        --dockerfile=Dockerfile \
+                        --context=dir:///harness \
+                        --destination="${REGISTRY}/${REPO}:${TAG}" \
+                        --destination="${REGISTRY}/${REPO}:${SHA}" \
+                        --insecure \
+                        --skip-tls-verify \
+                        --ignore-path=/product_uuid \
+                        --snapshot-mode=redo
+              - step:
+                  type: Run
+                  name: Trivy Image Scan
+                  identifier: Trivy_Image_Scan
+                  spec:
+                    connectorRef: dockerhub_public
+                    image: aquasec/trivy:0.57.1
+                    shell: Sh
+                    command: |-
+                      set -e
+                      REGISTRY="zot.harness-ci.svc.cluster.local:5000"
+                      REF="$REGISTRY/<+pipeline.variables.imageRepo>:<+pipeline.variables.imageTag>"
+                      echo "Scanning $REF"
+                      trivy image --severity CRITICAL --exit-code 1 --no-progress --timeout 10m --insecure "$REF"
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: Abort
+    - stage:
+        name: Deploy
+        identifier: Deploy
+        description: Helm deploy to samples namespace (tag builds only)
+        type: Deployment
+        when:
+          pipelineStatus: Success
+        spec:
+          deploymentType: NativeHelm
+          service:
+            serviceRef: sample_rust
+          environment:
+            environmentRef: local_kind
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: kind_infra_samples
+          execution:
+            steps:
+              - step:
+                  name: Helm Deploy
+                  identifier: Helm_Deploy
+                  type: HelmDeploy
+                  timeout: 10m
+                  spec:
+                    skipDryRun: false
+                    commandFlags:
+                      - commandType: Upgrade
+                        flag: "--set image.tag=<+pipeline.variables.imageTag>"
+                      - commandType: Install
+                        flag: "--set image.tag=<+pipeline.variables.imageTag>"
+            rollbackSteps:
+              - step:
+                  name: Helm Rollback
+                  identifier: Helm_Rollback
+                  type: HelmRollback
+                  timeout: 10m
+                  spec: {}
+        tags: {}
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback

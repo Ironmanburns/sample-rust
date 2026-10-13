@@ -1,0 +1,95 @@
+# PR preview — build + ephemeral Helm release (does not affect stable).
+pipeline:
+  name: PR Preview sample-rust
+  identifier: PR_Preview_sample_rust
+  projectIdentifier: sample_apps
+  orgIdentifier: default
+  tags:
+    app: sample-rust
+    deploy: pr-preview
+  properties:
+    ci:
+      codebase:
+        connectorRef: github_sample_apps
+        repoName: Ironmanburns/sample-rust
+        build: <+input>
+  variables:
+    - name: imageRepo
+      type: String
+      value: sample-rust
+    - name: imageTag
+      type: String
+      value: pr-<+trigger.prNumber>
+  stages:
+    - stage:
+        name: Build
+        identifier: Build
+        type: CI
+        spec:
+          cloneCodebase: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: local_kind_k8s
+              namespace: harness-ci
+              automountServiceAccountToken: true
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Build and Push
+                  identifier: Build_and_Push
+                  spec:
+                    connectorRef: dockerhub_public
+                    image: gcr.io/kaniko-project/executor:v1.23.2-debug
+                    shell: Sh
+                    command: |-
+                      set -e
+                      REGISTRY="zot.harness-ci.svc.cluster.local:5000"
+                      REPO="<+pipeline.variables.imageRepo>"
+                      TAG="<+pipeline.variables.imageTag>"
+                      /kaniko/executor \
+                        --dockerfile=Dockerfile \
+                        --context=dir:///harness \
+                        --destination="${REGISTRY}/${REPO}:${TAG}" \
+                        --insecure \
+                        --skip-tls-verify \
+                        --ignore-path=/product_uuid \
+                        --snapshot-mode=redo
+        failureStrategies:
+          - onFailure:
+              errors: [AllErrors]
+              action:
+                type: Abort
+    - stage:
+        name: Preview
+        identifier: Preview
+        type: Deployment
+        when:
+          pipelineStatus: Success
+        spec:
+          deploymentType: NativeHelm
+          service:
+            serviceRef: sample_rust
+          environment:
+            environmentRef: local_kind
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: kind_infra_samples
+          execution:
+            steps:
+              - step:
+                  name: Helm Preview
+                  identifier: Helm_Preview
+                  type: HelmDeploy
+                  timeout: 10m
+                  spec:
+                    skipDryRun: false
+                    # Target namespace samples-pr-sample-rust-<pr> via service/infra overrides in Harness UI/TF
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback

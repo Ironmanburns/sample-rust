@@ -1,0 +1,29 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig
+.kube/
+
+# Build / coverage (shared)
+dist/
+build/
+out/
+coverage/
+*.log
+tmp/
+.cache/
+
+# --- language: rust ---
+/target/
+Cargo.lock

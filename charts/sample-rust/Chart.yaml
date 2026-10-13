@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sample-rust
+description: Sample rust app for local platform (tag-only deploys)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
