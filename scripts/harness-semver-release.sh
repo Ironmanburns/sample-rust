@@ -193,37 +193,46 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 git tag -a "$TAG" -m "Release $TAG"
-git push "$PUSH_URL" "HEAD:${RELEASE_BRANCH}"
-git push "$PUSH_URL" "$TAG"
+
+# Only push the branch when we have a version-bump commit; tag push is required.
+if ! git push "$PUSH_URL" "HEAD:${RELEASE_BRANCH}"; then
+  echo "WARN: branch push failed (branch protection?). Continuing with tag push." >&2
+fi
+if ! git push "$PUSH_URL" "$TAG"; then
+  echo "ERROR: tag push failed — ensure the release GitHub App can write contents/tags on ${OWNER_REPO}" >&2
+  exit 1
+fi
 
 if [[ "$CREATE_GITHUB_RELEASE" == "true" ]]; then
-  export OWNER_REPO TAG NOTES
-  python3 - <<'PY'
-import json, os, urllib.error, urllib.request
-
-payload = json.dumps({
+  # Prefer curl (always present after apk); never fail the release if GH Release API errs.
+  body_file="$(mktemp)"
+  notes_file="$(mktemp)"
+  printf '%s' "$NOTES" >"$notes_file"
+  if command -v python3 >/dev/null 2>&1; then
+    NOTES_FILE="$notes_file" TAG="$TAG" python3 - <<'PY' >"$body_file"
+import json, os
+print(json.dumps({
     "tag_name": os.environ["TAG"],
     "name": os.environ["TAG"],
-    "body": os.environ.get("NOTES", ""),
+    "body": open(os.environ["NOTES_FILE"], encoding="utf-8").read(),
     "generate_release_notes": False,
-}).encode()
-req = urllib.request.Request(
-    f"https://api.github.com/repos/{os.environ['OWNER_REPO']}/releases",
-    data=payload,
-    headers={
-        "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-    },
-    method="POST",
-)
-try:
-    with urllib.request.urlopen(req) as resp:
-        print("GitHub Release:", resp.status)
-except urllib.error.HTTPError as e:
-    print("GitHub Release skipped/failed:", e.read().decode()[:500])
+}))
 PY
+  else
+    # Minimal JSON escape for body
+    body_escaped=$(sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$notes_file" | tr -d '\n' | sed 's/\\n$//')
+    printf '{"tag_name":"%s","name":"%s","body":"%s","generate_release_notes":false}\n' \
+      "$TAG" "$TAG" "$body_escaped" >"$body_file"
+  fi
+  code=$(curl -sS -o /tmp/gh-release-out -w '%{http_code}' \
+    -X POST "https://api.github.com/repos/${OWNER_REPO}/releases" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -H "Content-Type: application/json" \
+    --data @"$body_file" || true)
+  echo "GitHub Release HTTP $code"
+  rm -f "$body_file" "$notes_file"
 fi
 
 echo "Released $TAG"

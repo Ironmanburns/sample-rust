@@ -1,6 +1,7 @@
 # Release on push to main — creates v* tag only (no stable deploy).
 # Register trigger: GitHub push to branch main.
 # Pair with pipeline-deploy-tag.yaml (trigger: tag v*).
+# Placeholders sample-rust / sample_rust substituted by generate.sh.
 pipeline:
   name: Release sample-rust Main
   identifier: Release_sample_rust_Main
@@ -58,16 +59,21 @@ pipeline:
                     connectorRef: dockerhub_public
                     image: alpine:3.20
                     shell: Sh
-                    # Store a PAT or GitHub App installation token as Harness secret github_release_token
+                    # Mint a short-lived GitHub App installation token, then tag.
+                    # Live pipelines are managed by terraform/sample-apps (embeds mint script).
                     envVariables:
-                      GITHUB_TOKEN: <+secrets.getValue("github_release_token")>
+                      GITHUB_APP_ID: <+secrets.getValue("github_release_app_id")>
+                      GITHUB_APP_PRIVATE_KEY: <+secrets.getValue("github_release_app_private_key")>
+                      GITHUB_APP_OWNER: Ironmanburns
                       GITHUB_REPOSITORY: Ironmanburns/sample-rust
                       RELEASE_BRANCH: main
                       CREATE_GITHUB_RELEASE: "true"
                     command: |-
                       set -e
-                      apk add --no-cache git bash python3 nodejs >/dev/null
-                      chmod +x scripts/harness-semver-release.sh
+                      apk add --no-cache git bash python3 openssl curl >/dev/null
+                      chmod +x scripts/mint-github-app-token.sh scripts/harness-semver-release.sh
+                      export GITHUB_TOKEN="$(bash scripts/mint-github-app-token.sh)"
+                      test -n "$GITHUB_TOKEN"
                       bash scripts/harness-semver-release.sh
         failureStrategies:
           - onFailure:
